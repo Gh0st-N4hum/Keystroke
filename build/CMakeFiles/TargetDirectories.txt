@@ -1,0 +1,3 @@
+C:/Users/IDEAPAD GAMING3/Documents/GitHub/Keystroke/build/CMakeFiles/TypeDuel.dir
+C:/Users/IDEAPAD GAMING3/Documents/GitHub/Keystroke/build/CMakeFiles/ALL_BUILD.dir
+C:/Users/IDEAPAD GAMING3/Documents/GitHub/Keystroke/build/CMakeFiles/ZERO_CHECK.dir
