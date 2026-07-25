@@ -17,6 +17,7 @@
 enum class GameState
 {
     Menu,
+    Practice,
     Playing,
     RoundResult,
     GameOver,
@@ -34,10 +35,11 @@ struct LevelConfig
 std::vector<LevelConfig> buildLevels()
 {
     std::vector<LevelConfig> levels;
-    float wpmValues[10] = {50, 61, 72, 83, 94, 105, 116, 127, 139, 150};
-    for (int i = 0; i < 10; i++)
+    float wpmValues[20] = {20, 27, 34, 41, 47, 54, 61, 68, 75, 82,
+                           88, 95, 102, 109, 116, 123, 129, 136, 143, 150};
+    for (int i = 0; i < 20; i++)
     {
-        int diff = (i < 3) ? 0 : (i < 7 ? 1 : 2);
+        int diff = (i < 6) ? 0 : (i < 14 ? 1 : 2);
         levels.push_back({i + 1, wpmValues[i], diff});
     }
     return levels;
@@ -68,6 +70,13 @@ public:
             (difficulty == 0) ? &easy : (difficulty == 1 ? &medium : &hard);
         std::uniform_int_distribution<size_t> dist(0, pool->size() - 1);
         return (*pool)[dist(rng)];
+    }
+
+    // Picks a random phrase from a random difficulty tier - used by Practice mode.
+    std::string getRandomAny()
+    {
+        std::uniform_int_distribution<int> diffDist(0, 2);
+        return getRandom(diffDist(rng));
     }
 
 private:
@@ -346,7 +355,7 @@ private:
 
 int main()
 {
-    sf::RenderWindow window(sf::VideoMode({800u, 600u}), "Type Duel");
+    sf::RenderWindow window(sf::VideoMode({800u, 600u}), "Type Duel", sf::Style::Titlebar | sf::Style::Close);
     window.setFramerateLimit(60);
 
     // --- Font loading with a couple of fallbacks ---
@@ -379,6 +388,19 @@ int main()
     spritesLoaded = bulletTexture.loadFromFile("assets/bullet.png") && spritesLoaded;
     spritesLoaded = muzzleFlashTexture.loadFromFile("assets/muzzle_flash.png") && spritesLoaded;
 
+    sf::Texture menuBackgroundTexture;
+    bool menuBackgroundLoaded = menuBackgroundTexture.loadFromFile("assets/menu_background.png");
+    sf::Sprite menuBackgroundSprite(menuBackgroundTexture);
+    if (menuBackgroundLoaded)
+    {
+        sf::Vector2u bgSize = menuBackgroundTexture.getSize();
+        menuBackgroundSprite.setScale({800.f / bgSize.x, 600.f / bgSize.y});
+    }
+
+    sf::RectangleShape menuTextBackdrop({620.f, 160.f});
+    menuTextBackdrop.setPosition({90.f, 45.f});
+    menuTextBackdrop.setFillColor(sf::Color(20, 20, 30, 140));
+
     // Frame layout: all character sheets are 48x48 per frame, laid out in one row.
     // idle sheets = 4 frames, attack sheets = 6 frames, muzzle flash = 6 frames.
     Character player(idleTexture, attackTexture, gunPlayerTexture, 48, 48, 4, 6, /*flipped=*/false, sf::Color::White);
@@ -394,7 +416,7 @@ int main()
     std::vector<LevelConfig> levels = buildLevels();
 
     GameState state = GameState::Menu;
-    int levelIndex = 0; // 0-based index into levels - also serves as the checkpoint
+    int levelIndex = 0; // 0-based index into levels (1-20)
     int lives = 3;
 
     float playerHP = 100.f, opponentHP = 100.f;
@@ -418,12 +440,25 @@ int main()
         state = GameState::Playing;
     };
 
+    float practiceLastWPM = 0.f;
+    float practiceBestWPM = 0.f;
+
+    auto startPractice = [&]()
+    {
+        state = GameState::Practice;
+        targetString = wordBank.getRandomAny();
+        typedString.clear();
+        roundClock.restart();
+        practiceLastWPM = 0.f;
+        practiceBestWPM = 0.f;
+    };
+
     // --- UI text objects ---
     sf::Text titleText(font, "TYPE DUEL", 48);
     titleText.setPosition({230.f, 60.f});
 
-    sf::Text hintText(font, "Press ENTER to start Level 1", 22);
-    hintText.setPosition({210.f, 160.f});
+    sf::Text hintText(font, "Press 1 for Practice Mode\nPress ENTER or 2 to start the Duel (Level 1-20)", 22);
+    hintText.setPosition({140.f, 150.f});
 
     sf::Text levelText(font, "", 24);
     levelText.setPosition({20.f, 20.f});
@@ -506,7 +541,8 @@ int main()
                     }
                     else if (state == GameState::FinalGameOver)
                     {
-                        lives = 3; // out of lives - refill and resume from checkpoint (levelIndex)
+                        lives = 3; // out of lives - full reset back to Level 1
+                        levelIndex = 0;
                         startLevel();
                     }
                     else if (state == GameState::Victory)
@@ -514,12 +550,29 @@ int main()
                         window.close();
                     }
                 }
+                if (state == GameState::Menu && keyPressed->code == sf::Keyboard::Key::Num1)
+                {
+                    startPractice();
+                }
+                if (state == GameState::Menu && keyPressed->code == sf::Keyboard::Key::Num2)
+                {
+                    levelIndex = 0;
+                    lives = 3;
+                    startLevel();
+                }
                 if (keyPressed->code == sf::Keyboard::Key::Escape)
                 {
-                    window.close();
+                    if (state == GameState::Practice)
+                    {
+                        state = GameState::Menu;
+                    }
+                    else
+                    {
+                        window.close();
+                    }
                 }
                 if (keyPressed->code == sf::Keyboard::Key::Backspace &&
-                    state == GameState::Playing && keyPressed->control)
+                    (state == GameState::Playing || state == GameState::Practice) && keyPressed->control)
                 {
                     typedString.clear();
                 }
@@ -527,7 +580,29 @@ int main()
 
             if (const auto *textEntered = event->getIf<sf::Event::TextEntered>())
             {
-                if (state == GameState::Playing)
+                if (state == GameState::Practice)
+                {
+                    unsigned int unicode = textEntered->unicode;
+                    if (unicode == 8)
+                    {
+                        if (!typedString.empty())
+                            typedString.pop_back();
+                    }
+                    else if (unicode >= 32 && unicode < 127)
+                    {
+                        typedString += static_cast<char>(unicode);
+                    }
+                    if (typedString == targetString)
+                    {
+                        float seconds = roundClock.getElapsedTime().asSeconds();
+                        practiceLastWPM = computeWPM(targetString.size(), seconds);
+                        practiceBestWPM = std::max(practiceBestWPM, practiceLastWPM);
+                        targetString = wordBank.getRandomAny();
+                        typedString.clear();
+                        roundClock.restart();
+                    }
+                }
+                else if (state == GameState::Playing)
                 {
                     unsigned int unicode = textEntered->unicode;
                     if (unicode == 8)
@@ -629,8 +704,38 @@ int main()
 
         if (state == GameState::Menu)
         {
+            if (menuBackgroundLoaded)
+                window.draw(menuBackgroundSprite);
+            window.draw(menuTextBackdrop);
             window.draw(titleText);
             window.draw(hintText);
+        }
+        else if (state == GameState::Practice)
+        {
+            sf::Text practiceTitle(font, "PRACTICE MODE", 30);
+            practiceTitle.setPosition({260.f, 40.f});
+            window.draw(practiceTitle);
+
+            std::ostringstream statsOss;
+            statsOss << "Last: " << static_cast<int>(practiceLastWPM) << " WPM   |   Best: "
+                     << static_cast<int>(practiceBestWPM) << " WPM";
+            sf::Text practiceStats(font, statsOss.str(), 22);
+            practiceStats.setPosition({40.f, 100.f});
+            window.draw(practiceStats);
+
+            const float wrapWidth = 720.f;
+            targetText.setString(wrapTextToWidth(font, targetString, 26, wrapWidth));
+            typedText.setString(wrapTextToWidth(font, typedString, 26, wrapWidth));
+            targetText.setPosition({40.f, 220.f});
+            typedText.setPosition({40.f, 300.f});
+            window.draw(targetText);
+            window.draw(typedText);
+            targetText.setPosition({40.f, 300.f}); // restore Duel layout position for other states
+
+            footerText.setString("Type the string as fast as you can. Press ESC to return to the menu.");
+            footerText.setPosition({40.f, 400.f});
+            window.draw(footerText);
+            footerText.setPosition({40.f, 560.f}); // restore Duel layout position for other states
         }
         else
         {
@@ -676,8 +781,7 @@ int main()
                 }
                 else if (state == GameState::FinalGameOver)
                 {
-                    footerText.setString("Out of lives! Press ENTER to restart from your checkpoint (Level " +
-                                         std::to_string(lvl.level) + ") with 3 fresh lives.");
+                    footerText.setString("Out of lives! Press ENTER to restart from Level 1 with 3 fresh lives.");
                 }
                 else
                 {
