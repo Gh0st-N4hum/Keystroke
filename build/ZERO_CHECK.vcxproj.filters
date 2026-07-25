@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\IDEAPAD GAMING3\Documents\GitHub\Keystroke\build\CMakeFiles\01cda97aad4fd2e26f2705308bb9c74c\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{53C27111-345A-3F12-895B-78665D161475}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>
