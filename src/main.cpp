@@ -14,46 +14,56 @@
 // scaled by how much faster they were. First to 0 HP loses the round.
 // ----------------------------------------------------------------------
 
-enum class GameState { Menu, Playing, RoundResult, GameOver, Victory };
-
-struct LevelConfig {
-    int level;
-    float requiredWPM;   // opponent's fixed typing speed for this level
-    int wordDifficulty;  // 0 = easy, 1 = medium, 2 = hard
+enum class GameState
+{
+    Menu,
+    Playing,
+    RoundResult,
+    GameOver,
+    Victory
 };
 
-std::vector<LevelConfig> buildLevels() {
+struct LevelConfig
+{
+    int level;
+    float requiredWPM;  // opponent's fixed typing speed for this level
+    int wordDifficulty; // 0 = easy, 1 = medium, 2 = hard
+};
+
+std::vector<LevelConfig> buildLevels()
+{
     std::vector<LevelConfig> levels;
     float wpmValues[10] = {50, 61, 72, 83, 94, 105, 116, 127, 139, 150};
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 10; i++)
+    {
         int diff = (i < 3) ? 0 : (i < 7 ? 1 : 2);
         levels.push_back({i + 1, wpmValues[i], diff});
     }
     return levels;
 }
 
-class WordBank {
+class WordBank
+{
 public:
-    WordBank() {
+    WordBank()
+    {
         easy = {
             "the cat sat", "run fast now", "code is fun",
-            "type this word", "keep it simple", "win this round"
-        };
+            "type this word", "keep it simple", "win this round"};
         medium = {
             "the quick brown fox jumps", "practice makes perfect every day",
             "typing speed matters a lot", "victory comes to the fastest",
-            "focus on accuracy and speed"
-        };
+            "focus on accuracy and speed"};
         hard = {
             "the extraordinary programmer conquered every challenge swiftly",
             "consistency and precision define a true typing champion",
             "rapid keystrokes determine the outcome of this duel",
-            "only relentless practice separates good from great typists"
-        };
+            "only relentless practice separates good from great typists"};
     }
 
-    std::string getRandom(int difficulty) {
-        std::vector<std::string>* pool =
+    std::string getRandom(int difficulty)
+    {
+        std::vector<std::string> *pool =
             (difficulty == 0) ? &easy : (difficulty == 1 ? &medium : &hard);
         std::uniform_int_distribution<size_t> dist(0, pool->size() - 1);
         return (*pool)[dist(rng)];
@@ -66,29 +76,154 @@ private:
 
 // Computes words-per-minute given character count and elapsed seconds.
 // Standard convention: 1 "word" = 5 characters.
-float computeWPM(size_t charCount, float elapsedSeconds) {
-    if (elapsedSeconds <= 0.01f) return 0.f;
+float computeWPM(size_t charCount, float elapsedSeconds)
+{
+    if (elapsedSeconds <= 0.01f)
+        return 0.f;
     float minutes = elapsedSeconds / 60.f;
     return (static_cast<float>(charCount) / 5.f) / minutes;
 }
 
-int main() {
+// ----------------------------------------------------------------------
+// Character: wraps a sprite that animates between an Idle loop and a
+// one-shot Attack animation, both sliced from horizontal sprite sheets
+// with equal-sized frames. Also supports a quick red "hurt" flash.
+// ----------------------------------------------------------------------
+class Character
+{
+public:
+    Character(const sf::Texture &idleTex, const sf::Texture &attackTex,
+              int frameW, int frameH, int idleFrames, int attackFrames,
+              bool flipped, sf::Color tint = sf::Color::White)
+        : idleTexture(idleTex), attackTexture(attackTex),
+          frameWidth(frameW), frameHeight(frameH),
+          idleFrameCount(idleFrames), attackFrameCount(attackFrames),
+          flipped(flipped), baseTint(tint), sprite(idleTex)
+    {
+        sprite.setTextureRect(sf::IntRect({0, 0}, {frameWidth, frameHeight}));
+        sprite.setOrigin({frameWidth / 2.f, frameHeight / 2.f});
+        const float scale = 3.f;
+        sprite.setScale({flipped ? -scale : scale, scale});
+        sprite.setColor(baseTint);
+    }
+
+    void setPosition(sf::Vector2f pos) { sprite.setPosition(pos); }
+
+    // Starts the one-shot attack animation; auto-returns to Idle when done.
+    void playAttack()
+    {
+        state = State::Attacking;
+        currentFrame = 0;
+        timer = 0.f;
+        sprite.setTexture(attackTexture, true);
+        sprite.setTextureRect(sf::IntRect({0, 0}, {frameWidth, frameHeight}));
+    }
+
+    // Briefly tints the sprite red to show it took damage.
+    void hurtFlash()
+    {
+        hurtTimer = 0.15f;
+    }
+
+    void update(float dt)
+    {
+        if (hurtTimer > 0.f)
+        {
+            hurtTimer -= dt;
+            sprite.setColor(sf::Color(255, 90, 90));
+            if (hurtTimer <= 0.f)
+                sprite.setColor(baseTint);
+        }
+
+        timer += dt;
+        if (state == State::Idle)
+        {
+            const float idleFrameDuration = 0.15f;
+            if (timer >= idleFrameDuration)
+            {
+                timer -= idleFrameDuration;
+                currentFrame = (currentFrame + 1) % idleFrameCount;
+                sprite.setTextureRect(sf::IntRect({currentFrame * frameWidth, 0}, {frameWidth, frameHeight}));
+            }
+        }
+        else
+        {
+            const float attackFrameDuration = 0.06f;
+            if (timer >= attackFrameDuration)
+            {
+                timer -= attackFrameDuration;
+                currentFrame++;
+                if (currentFrame >= attackFrameCount)
+                {
+                    state = State::Idle;
+                    currentFrame = 0;
+                    sprite.setTexture(idleTexture, true);
+                    sprite.setTextureRect(sf::IntRect({0, 0}, {frameWidth, frameHeight}));
+                }
+                else
+                {
+                    sprite.setTextureRect(sf::IntRect({currentFrame * frameWidth, 0}, {frameWidth, frameHeight}));
+                }
+            }
+        }
+    }
+
+    sf::Sprite sprite;
+
+private:
+    enum class State
+    {
+        Idle,
+        Attacking
+    };
+    const sf::Texture &idleTexture;
+    const sf::Texture &attackTexture;
+    int frameWidth, frameHeight;
+    int idleFrameCount, attackFrameCount;
+    bool flipped;
+    sf::Color baseTint;
+    State state = State::Idle;
+    int currentFrame = 0;
+    float timer = 0.f;
+    float hurtTimer = 0.f;
+};
+
+int main()
+{
     sf::RenderWindow window(sf::VideoMode({800u, 600u}), "Type Duel");
     window.setFramerateLimit(60);
 
     // --- Font loading with a couple of fallbacks ---
     sf::Font font;
     bool fontLoaded = font.openFromFile("assets/font.ttf");
-    if (!fontLoaded) fontLoaded = font.openFromFile("C:/Windows/Fonts/consola.ttf");
-    if (!fontLoaded) fontLoaded = font.openFromFile("C:/Windows/Fonts/arial.ttf");
-    if (!fontLoaded) {
+    if (!fontLoaded)
+        fontLoaded = font.openFromFile("C:/Windows/Fonts/consola.ttf");
+    if (!fontLoaded)
+        fontLoaded = font.openFromFile("C:/Windows/Fonts/arial.ttf");
+    if (!fontLoaded)
+    {
         // Last resort on Linux dev machines
         fontLoaded = font.openFromFile("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
     }
-    if (!fontLoaded) {
+    if (!fontLoaded)
+    {
         // We can still run, but text won't render without a valid font.
         // Drop a font file at assets/font.ttf (see README.md).
     }
+
+    // --- Character sprite sheets ---
+    sf::Texture idleTexture, attackTexture, opponentIdleTexture, opponentAttackTexture;
+    bool spritesLoaded = idleTexture.loadFromFile("assets/idle.png");
+    spritesLoaded = attackTexture.loadFromFile("assets/attack.png") && spritesLoaded;
+    spritesLoaded = opponentIdleTexture.loadFromFile("assets/opponent_idle.png") && spritesLoaded;
+    spritesLoaded = opponentAttackTexture.loadFromFile("assets/opponent_attack.png") && spritesLoaded;
+
+    // Frame layout: all sheets are 48x48 per frame, laid out in one row.
+    // idle sheets = 4 frames, attack sheets = 6 frames.
+    Character player(idleTexture, attackTexture, 48, 48, 4, 6, /*flipped=*/false, sf::Color::White);
+    Character opponent(opponentIdleTexture, opponentAttackTexture, 48, 48, 4, 6, /*flipped=*/true, sf::Color(255, 190, 190));
+    player.setPosition({200.f, 420.f});
+    opponent.setPosition({600.f, 420.f});
 
     WordBank wordBank;
     std::vector<LevelConfig> levels = buildLevels();
@@ -102,13 +237,15 @@ int main() {
     sf::Clock roundClock;
     std::string roundMessage;
 
-    auto startRound = [&]() {
+    auto startRound = [&]()
+    {
         targetString = wordBank.getRandom(levels[levelIndex].wordDifficulty);
         typedString.clear();
         roundClock.restart();
     };
 
-    auto startLevel = [&]() {
+    auto startLevel = [&]()
+    {
         playerHP = 100.f;
         opponentHP = 100.f;
         startRound();
@@ -137,6 +274,10 @@ int main() {
     sf::Text footerText(font, "", 20);
     footerText.setPosition({50.f, 550.f});
 
+    sf::Text spriteWarningText(font, "", 18);
+    spriteWarningText.setPosition({20.f, 570.f});
+    spriteWarningText.setFillColor(sf::Color(255, 100, 100));
+
     // Player and opponent bars
     sf::RectangleShape playerBarBg({300.f, 24.f});
     playerBarBg.setPosition({50.f, 90.f});
@@ -154,42 +295,73 @@ int main() {
     opponentBar.setPosition({450.f, 90.f});
     opponentBar.setFillColor(sf::Color(210, 70, 70));
 
-    while (window.isOpen()) {
-        while (const std::optional<sf::Event> event = window.pollEvent()) {
-            if (event->is<sf::Event::Closed>()) {
+    sf::Clock frameClock;
+
+    while (window.isOpen())
+    {
+        float dt = frameClock.restart().asSeconds();
+        player.update(dt);
+        opponent.update(dt);
+
+        while (const std::optional<sf::Event> event = window.pollEvent())
+        {
+            if (event->is<sf::Event::Closed>())
+            {
                 window.close();
             }
 
-            if (const auto* keyPressed = event->getIf<sf::Event::KeyPressed>()) {
-                if (keyPressed->code == sf::Keyboard::Key::Enter) {
-                    if (state == GameState::Menu) {
+            if (const auto *keyPressed = event->getIf<sf::Event::KeyPressed>())
+            {
+                if (keyPressed->code == sf::Keyboard::Key::Enter)
+                {
+                    if (state == GameState::Menu)
+                    {
                         levelIndex = 0;
                         startLevel();
-                    } else if (state == GameState::RoundResult) {
+                    }
+                    else if (state == GameState::RoundResult)
+                    {
                         startRound();
                         state = GameState::Playing;
-                    } else if (state == GameState::GameOver) {
+                    }
+                    else if (state == GameState::GameOver)
+                    {
                         startLevel(); // retry same level
-                    } else if (state == GameState::Victory) {
+                    }
+                    else if (state == GameState::Victory)
+                    {
                         window.close();
                     }
                 }
-                if (keyPressed->code == sf::Keyboard::Key::Escape) {
+                if (keyPressed->code == sf::Keyboard::Key::Escape)
+                {
                     window.close();
+                }
+                if (keyPressed->code == sf::Keyboard::Key::Backspace &&
+                    state == GameState::Playing && keyPressed->control)
+                {
+                    typedString.clear();
                 }
             }
 
-            if (const auto* textEntered = event->getIf<sf::Event::TextEntered>()) {
-                if (state == GameState::Playing) {
+            if (const auto *textEntered = event->getIf<sf::Event::TextEntered>())
+            {
+                if (state == GameState::Playing)
+                {
                     unsigned int unicode = textEntered->unicode;
-                    if (unicode == 8) { // backspace
-                        if (!typedString.empty()) typedString.pop_back();
-                    } else if (unicode >= 32 && unicode < 127) {
+                    if (unicode == 8)
+                    { // backspace
+                        if (!typedString.empty())
+                            typedString.pop_back();
+                    }
+                    else if (unicode >= 32 && unicode < 127)
+                    {
                         typedString += static_cast<char>(unicode);
                     }
 
                     // Check completion
-                    if (typedString == targetString) {
+                    if (typedString == targetString)
+                    {
                         float playerSeconds = roundClock.getElapsedTime().asSeconds();
                         float playerWPM = computeWPM(targetString.size(), playerSeconds);
 
@@ -198,18 +370,25 @@ int main() {
                             (targetString.size() / 5.f) / (requiredWPM / 60.f);
 
                         const float baseDamage = 15.f;
-                        if (playerSeconds <= opponentSeconds) {
+                        if (playerSeconds <= opponentSeconds)
+                        {
                             float ratio = std::clamp(opponentSeconds / std::max(playerSeconds, 0.01f), 0.5f, 3.0f);
                             float dmg = baseDamage * ratio;
                             opponentHP -= dmg;
+                            player.playAttack();
+                            opponent.hurtFlash();
                             std::ostringstream oss;
                             oss << "You typed at " << static_cast<int>(playerWPM)
                                 << " WPM - you strike for " << static_cast<int>(dmg) << " damage!";
                             roundMessage = oss.str();
-                        } else {
+                        }
+                        else
+                        {
                             float ratio = std::clamp(playerSeconds / std::max(opponentSeconds, 0.01f), 0.5f, 3.0f);
                             float dmg = baseDamage * ratio;
                             playerHP -= dmg;
+                            opponent.playAttack();
+                            player.hurtFlash();
                             std::ostringstream oss;
                             oss << "Too slow (" << static_cast<int>(playerWPM)
                                 << " WPM) - opponent strikes for " << static_cast<int>(dmg) << " damage!";
@@ -219,17 +398,25 @@ int main() {
                         opponentHP = std::max(0.f, opponentHP);
                         playerHP = std::max(0.f, playerHP);
 
-                        if (opponentHP <= 0.f) {
-                            if (levelIndex == static_cast<int>(levels.size()) - 1) {
+                        if (opponentHP <= 0.f)
+                        {
+                            if (levelIndex == static_cast<int>(levels.size()) - 1)
+                            {
                                 state = GameState::Victory;
-                            } else {
+                            }
+                            else
+                            {
                                 levelIndex++;
                                 state = GameState::RoundResult;
                                 roundMessage = "Level " + std::to_string(levels[levelIndex - 1].level) + " cleared! Press ENTER for next level.";
                             }
-                        } else if (playerHP <= 0.f) {
+                        }
+                        else if (playerHP <= 0.f)
+                        {
                             state = GameState::GameOver;
-                        } else {
+                        }
+                        else
+                        {
                             state = GameState::RoundResult;
                         }
                     }
@@ -239,13 +426,22 @@ int main() {
 
         window.clear(sf::Color(25, 25, 35));
 
-        if (state == GameState::Menu) {
+        if (!spritesLoaded)
+        {
+            spriteWarningText.setString("WARNING: one or more sprite files failed to load from assets/ - characters will not be visible.");
+            window.draw(spriteWarningText);
+        }
+
+        if (state == GameState::Menu)
+        {
             window.draw(titleText);
             window.draw(hintText);
-        } else {
-            const LevelConfig& lvl = levels[levelIndex];
+        }
+        else
+        {
+            const LevelConfig &lvl = levels[levelIndex];
             levelText.setString("Level " + std::to_string(lvl.level) + "  |  Opponent speed: " +
-                                 std::to_string(static_cast<int>(lvl.requiredWPM)) + " WPM");
+                                std::to_string(static_cast<int>(lvl.requiredWPM)) + " WPM");
             window.draw(levelText);
 
             playerBar.setSize({300.f * (playerHP / 100.f), 24.f});
@@ -255,22 +451,30 @@ int main() {
             window.draw(opponentBarBg);
             window.draw(opponentBar);
 
+            window.draw(player.sprite);
+            window.draw(opponent.sprite);
+
             targetText.setString(targetString);
             typedText.setString(typedString);
             window.draw(targetText);
             window.draw(typedText);
 
-            if (state == GameState::RoundResult || state == GameState::GameOver) {
+            if (state == GameState::RoundResult || state == GameState::GameOver)
+            {
                 messageText.setString(roundMessage.empty() ? "" : roundMessage);
                 window.draw(messageText);
                 footerText.setString(state == GameState::GameOver
-                    ? "You lost the duel. Press ENTER to retry the level."
-                    : "Press ENTER for the next word.");
+                                         ? "You lost the duel. Press ENTER to retry the level."
+                                         : "Press ENTER for the next word.");
                 window.draw(footerText);
-            } else if (state == GameState::Victory) {
+            }
+            else if (state == GameState::Victory)
+            {
                 messageText.setString("You beat all 10 levels! Press ENTER to exit.");
                 window.draw(messageText);
-            } else {
+            }
+            else
+            {
                 footerText.setString("Type the string above as fast as you can!");
                 window.draw(footerText);
             }
