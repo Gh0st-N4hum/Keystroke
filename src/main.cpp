@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cmath>
 #include <sstream>
+#include <fstream>
+#include <ctime>
 
 // ----------------------------------------------------------------------
 // Type Duel - MVP
@@ -353,6 +355,88 @@ private:
     Character *targetCharacter;
 };
 
+// ----------------------------------------------------------------------
+// Button: a clickable rectangle with a label, used for all mouse-driven
+// navigation (menu, pause overlay, continue prompts) so that keyboard
+// letters remain free for typing at all times.
+// ----------------------------------------------------------------------
+struct Button
+{
+    Button(const sf::Font &font, const std::string &text, sf::Vector2f pos, sf::Vector2f sz, unsigned int charSize = 20)
+        : box(sz), label(font, text, charSize), position(pos), size(sz)
+    {
+        box.setPosition(pos);
+        box.setFillColor(sf::Color(45, 50, 70));
+        box.setOutlineColor(sf::Color(140, 150, 190));
+        box.setOutlineThickness(2.f);
+        label.setPosition({pos.x + 14.f, pos.y + (sz.y - static_cast<float>(charSize)) / 2.f - 4.f});
+    }
+
+    void setText(const std::string &text) { label.setString(text); }
+
+    bool contains(sf::Vector2f p) const
+    {
+        return p.x >= position.x && p.x <= position.x + size.x &&
+               p.y >= position.y && p.y <= position.y + size.y;
+    }
+
+    void setHover(bool hover)
+    {
+        box.setFillColor(hover ? sf::Color(70, 78, 105) : sf::Color(45, 50, 70));
+    }
+
+    void draw(sf::RenderWindow &win)
+    {
+        win.draw(box);
+        win.draw(label);
+    }
+
+    sf::RectangleShape box;
+    sf::Text label;
+    sf::Vector2f position, size;
+};
+
+// ----------------------------------------------------------------------
+// LoopingAnim: a simple continuously-looping frame animation, used for
+// the victory sequence.
+// ----------------------------------------------------------------------
+struct LoopingAnim
+{
+    LoopingAnim(const sf::Texture &tex, int fw, int fh, int fc, float frameDur, float scale)
+        : sprite(tex), frameW(fw), frameH(fh), frameCount(fc), frameDuration(frameDur)
+    {
+        sprite.setTextureRect(sf::IntRect({0, 0}, {frameW, frameH}));
+        sprite.setOrigin({frameW / 2.f, frameH / 2.f});
+        sprite.setScale({scale, scale});
+    }
+
+    void update(float dt)
+    {
+        timer += dt;
+        if (timer >= frameDuration)
+        {
+            timer -= frameDuration;
+            currentFrame = (currentFrame + 1) % frameCount;
+            sprite.setTextureRect(sf::IntRect({currentFrame * frameW, 0}, {frameW, frameH}));
+        }
+    }
+
+    void reset()
+    {
+        currentFrame = 0;
+        timer = 0.f;
+        sprite.setTextureRect(sf::IntRect({0, 0}, {frameW, frameH}));
+    }
+
+    sf::Sprite sprite;
+
+private:
+    int frameW, frameH, frameCount;
+    int currentFrame = 0;
+    float timer = 0.f;
+    float frameDuration;
+};
+
 int main()
 {
     sf::RenderWindow window(sf::VideoMode({800u, 600u}), "Type Duel", sf::Style::Titlebar | sf::Style::Close);
@@ -396,6 +480,11 @@ int main()
         sf::Vector2u bgSize = menuBackgroundTexture.getSize();
         menuBackgroundSprite.setScale({800.f / bgSize.x, 600.f / bgSize.y});
     }
+
+    sf::Texture victoryTexture;
+    bool victoryLoaded = victoryTexture.loadFromFile("assets/victory.jpg");
+    LoopingAnim victoryAnim(victoryTexture, 60, 113, 10, 0.08f, 2.2f);
+    victoryAnim.sprite.setPosition({400.f, 220.f});
 
     sf::RectangleShape menuTextBackdrop({620.f, 160.f});
     menuTextBackdrop.setPosition({90.f, 45.f});
@@ -453,12 +542,37 @@ int main()
         practiceBestWPM = 0.f;
     };
 
+    // --- Pause + session log ---
+    bool paused = false;
+    std::string pauseFeedback;
+    std::vector<std::string> gameLog;
+
+    auto saveLog = [&]()
+    {
+        std::ofstream file("game_log.txt", std::ios::app);
+        if (!file.is_open())
+        {
+            pauseFeedback = "Failed to save log (could not open game_log.txt).";
+            return;
+        }
+        std::time_t now = std::time(nullptr);
+        char buf[64];
+        std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
+        file << "=== Session saved at " << buf << " ===\n";
+        for (const auto &line : gameLog)
+            file << line << "\n";
+        if (state == GameState::Playing || state == GameState::RoundResult)
+        {
+            file << "Currently on Level " << levels[levelIndex].level << ", Lives: " << lives << "\n";
+        }
+        file << "\n";
+        file.close();
+        pauseFeedback = "Log saved to game_log.txt";
+    };
+
     // --- UI text objects ---
     sf::Text titleText(font, "TYPE DUEL", 48);
     titleText.setPosition({230.f, 60.f});
-
-    sf::Text hintText(font, "Press 1 for Practice Mode\nPress ENTER or 2 to start the Duel (Level 1-20)", 22);
-    hintText.setPosition({140.f, 150.f});
 
     sf::Text levelText(font, "", 24);
     levelText.setPosition({20.f, 20.f});
@@ -478,6 +592,18 @@ int main()
     sf::Text spriteWarningText(font, "", 16);
     spriteWarningText.setPosition({20.f, 582.f});
     spriteWarningText.setFillColor(sf::Color(255, 100, 100));
+
+    // --- Buttons (mouse-driven navigation, keeps keyboard free for typing) ---
+    Button practiceBtn(font, "Practice Mode", {250.f, 220.f}, {300.f, 50.f}, 22);
+    Button duelBtn(font, "Start Duel (Lv 1-20)", {250.f, 290.f}, {300.f, 50.f}, 22);
+
+    Button pauseBtn(font, "Pause", {670.f, 15.f}, {110.f, 36.f}, 18);
+
+    Button pauseContinueBtn(font, "Continue", {300.f, 260.f}, {200.f, 46.f}, 20);
+    Button pauseSaveBtn(font, "Save Log", {300.f, 320.f}, {200.f, 46.f}, 20);
+    Button pauseMenuBtn(font, "Back to Menu", {300.f, 380.f}, {200.f, 46.f}, 20);
+
+    Button continueBtn(font, "Continue", {300.f, 445.f}, {200.f, 44.f}, 20);
 
     // Player and opponent bars
     sf::RectangleShape playerBarBg({300.f, 24.f});
@@ -501,16 +627,20 @@ int main()
     while (window.isOpen())
     {
         float dt = frameClock.restart().asSeconds();
-        player.update(dt);
-        opponent.update(dt);
-        playerMuzzle.update(dt);
-        opponentMuzzle.update(dt);
-        for (auto it = projectiles.begin(); it != projectiles.end();)
+        if (!paused)
         {
-            if (!it->update(dt))
-                it = projectiles.erase(it);
-            else
-                ++it;
+            player.update(dt);
+            opponent.update(dt);
+            playerMuzzle.update(dt);
+            opponentMuzzle.update(dt);
+            victoryAnim.update(dt);
+            for (auto it = projectiles.begin(); it != projectiles.end();)
+            {
+                if (!it->update(dt))
+                    it = projectiles.erase(it);
+                else
+                    ++it;
+            }
         }
 
         while (const std::optional<sf::Event> event = window.pollEvent())
@@ -522,65 +652,62 @@ int main()
 
             if (const auto *keyPressed = event->getIf<sf::Event::KeyPressed>())
             {
-                if (keyPressed->code == sf::Keyboard::Key::Enter)
+                if (!paused)
                 {
-                    if (state == GameState::Menu)
+                    if (keyPressed->code == sf::Keyboard::Key::Enter)
                     {
-                        levelIndex = 0;
-                        lives = 3;
-                        startLevel();
+                        if (state == GameState::Menu)
+                        {
+                            levelIndex = 0;
+                            lives = 3;
+                            startLevel();
+                        }
+                        else if (state == GameState::RoundResult)
+                        {
+                            startRound();
+                            state = GameState::Playing;
+                        }
+                        else if (state == GameState::GameOver)
+                        {
+                            startLevel(); // lost a life - retry the same level
+                        }
+                        else if (state == GameState::FinalGameOver)
+                        {
+                            lives = 3; // out of lives - full reset back to Level 1
+                            levelIndex = 0;
+                            startLevel();
+                        }
+                        else if (state == GameState::Victory)
+                        {
+                            window.close();
+                        }
                     }
-                    else if (state == GameState::RoundResult)
+                    if (keyPressed->code == sf::Keyboard::Key::Escape)
                     {
-                        startRound();
-                        state = GameState::Playing;
+                        if (state == GameState::Practice)
+                        {
+                            state = GameState::Menu;
+                        }
+                        else
+                        {
+                            window.close();
+                        }
                     }
-                    else if (state == GameState::GameOver)
+                    if (keyPressed->code == sf::Keyboard::Key::Backspace &&
+                        (state == GameState::Playing || state == GameState::Practice) && keyPressed->control)
                     {
-                        startLevel(); // lost a life - retry the same level
+                        typedString.clear();
                     }
-                    else if (state == GameState::FinalGameOver)
-                    {
-                        lives = 3; // out of lives - full reset back to Level 1
-                        levelIndex = 0;
-                        startLevel();
-                    }
-                    else if (state == GameState::Victory)
-                    {
-                        window.close();
-                    }
-                }
-                if (state == GameState::Menu && keyPressed->code == sf::Keyboard::Key::Num1)
-                {
-                    startPractice();
-                }
-                if (state == GameState::Menu && keyPressed->code == sf::Keyboard::Key::Num2)
-                {
-                    levelIndex = 0;
-                    lives = 3;
-                    startLevel();
-                }
-                if (keyPressed->code == sf::Keyboard::Key::Escape)
-                {
-                    if (state == GameState::Practice)
-                    {
-                        state = GameState::Menu;
-                    }
-                    else
-                    {
-                        window.close();
-                    }
-                }
-                if (keyPressed->code == sf::Keyboard::Key::Backspace &&
-                    (state == GameState::Playing || state == GameState::Practice) && keyPressed->control)
-                {
-                    typedString.clear();
                 }
             }
 
             if (const auto *textEntered = event->getIf<sf::Event::TextEntered>())
             {
-                if (state == GameState::Practice)
+                if (paused)
+                {
+                    // ignore all typing input while paused
+                }
+                else if (state == GameState::Practice)
                 {
                     unsigned int unicode = textEntered->unicode;
                     if (unicode == 8)
@@ -663,6 +790,8 @@ int main()
                             if (levelIndex == static_cast<int>(levels.size()) - 1)
                             {
                                 state = GameState::Victory;
+                                victoryAnim.reset();
+                                gameLog.push_back("VICTORY! Cleared all 20 levels.");
                             }
                             else
                             {
@@ -671,6 +800,7 @@ int main()
                                 opponentHP = 100.f;
                                 state = GameState::RoundResult;
                                 roundMessage = "Level " + std::to_string(levels[levelIndex - 1].level) + " cleared! Press ENTER for next level.";
+                                gameLog.push_back("Cleared Level " + std::to_string(levels[levelIndex - 1].level) + ".");
                             }
                         }
                         else if (playerHP <= 0.f)
@@ -679,10 +809,14 @@ int main()
                             if (lives > 0)
                             {
                                 state = GameState::GameOver;
+                                gameLog.push_back("Lost a life on Level " + std::to_string(levels[levelIndex].level) +
+                                                  " - " + std::to_string(lives) + " lives remaining.");
                             }
                             else
                             {
                                 state = GameState::FinalGameOver;
+                                gameLog.push_back("Out of lives on Level " + std::to_string(levels[levelIndex].level) +
+                                                  " - resetting to Level 1.");
                             }
                         }
                         else
@@ -692,9 +826,95 @@ int main()
                     }
                 }
             }
+
+            if (const auto *mousePressed = event->getIf<sf::Event::MouseButtonPressed>())
+            {
+                if (mousePressed->button == sf::Mouse::Button::Left)
+                {
+                    sf::Vector2f mp = window.mapPixelToCoords(
+                        sf::Vector2i(mousePressed->position.x, mousePressed->position.y));
+
+                    if (paused)
+                    {
+                        if (pauseContinueBtn.contains(mp))
+                        {
+                            paused = false;
+                            roundClock.restart();
+                            pauseFeedback.clear();
+                        }
+                        else if (pauseSaveBtn.contains(mp))
+                        {
+                            saveLog();
+                        }
+                        else if (pauseMenuBtn.contains(mp))
+                        {
+                            paused = false;
+                            state = GameState::Menu;
+                            pauseFeedback.clear();
+                        }
+                    }
+                    else if (state == GameState::Menu)
+                    {
+                        if (practiceBtn.contains(mp))
+                        {
+                            startPractice();
+                        }
+                        else if (duelBtn.contains(mp))
+                        {
+                            levelIndex = 0;
+                            lives = 3;
+                            startLevel();
+                        }
+                    }
+                    else if (state == GameState::Playing || state == GameState::Practice)
+                    {
+                        if (pauseBtn.contains(mp))
+                        {
+                            paused = true;
+                            pauseFeedback.clear();
+                        }
+                    }
+                    else if (state == GameState::RoundResult)
+                    {
+                        if (continueBtn.contains(mp))
+                        {
+                            startRound();
+                            state = GameState::Playing;
+                        }
+                    }
+                    else if (state == GameState::GameOver)
+                    {
+                        if (continueBtn.contains(mp))
+                            startLevel();
+                    }
+                    else if (state == GameState::FinalGameOver)
+                    {
+                        if (continueBtn.contains(mp))
+                        {
+                            lives = 3;
+                            levelIndex = 0;
+                            startLevel();
+                        }
+                    }
+                    else if (state == GameState::Victory)
+                    {
+                        if (continueBtn.contains(mp))
+                            window.close();
+                    }
+                }
+            }
         }
 
         window.clear(sf::Color(25, 25, 35));
+
+        sf::Vector2f mouseWorld = window.mapPixelToCoords(sf::Mouse::getPosition(window));
+        practiceBtn.setHover(practiceBtn.contains(mouseWorld));
+        duelBtn.setHover(duelBtn.contains(mouseWorld));
+        pauseBtn.setHover(pauseBtn.contains(mouseWorld));
+        pauseContinueBtn.setHover(pauseContinueBtn.contains(mouseWorld));
+        pauseSaveBtn.setHover(pauseSaveBtn.contains(mouseWorld));
+        pauseMenuBtn.setHover(pauseMenuBtn.contains(mouseWorld));
+        continueBtn.setHover(continueBtn.contains(mouseWorld));
 
         if (!spritesLoaded)
         {
@@ -708,7 +928,8 @@ int main()
                 window.draw(menuBackgroundSprite);
             window.draw(menuTextBackdrop);
             window.draw(titleText);
-            window.draw(hintText);
+            practiceBtn.draw(window);
+            duelBtn.draw(window);
         }
         else if (state == GameState::Practice)
         {
@@ -736,6 +957,8 @@ int main()
             footerText.setPosition({40.f, 400.f});
             window.draw(footerText);
             footerText.setPosition({40.f, 560.f}); // restore Duel layout position for other states
+            if (!paused)
+                pauseBtn.draw(window);
         }
         else
         {
@@ -776,28 +999,65 @@ int main()
 
                 if (state == GameState::GameOver)
                 {
-                    footerText.setString("You lost a life! Lives remaining: " + std::to_string(lives) +
-                                         ". Press ENTER to retry Level " + std::to_string(lvl.level) + ".");
+                    footerText.setString("You lost a life! Lives remaining: " + std::to_string(lives) + ".");
+                    continueBtn.setText("Retry Level");
                 }
                 else if (state == GameState::FinalGameOver)
                 {
-                    footerText.setString("Out of lives! Press ENTER to restart from Level 1 with 3 fresh lives.");
+                    footerText.setString("Out of lives! Restarting from Level 1 with 3 fresh lives.");
+                    continueBtn.setText("Restart from Level 1");
                 }
                 else
                 {
-                    footerText.setString("Press ENTER for the next word.");
+                    footerText.setString("");
+                    continueBtn.setText("Continue");
                 }
                 window.draw(footerText);
+                continueBtn.draw(window);
             }
             else if (state == GameState::Victory)
             {
-                messageText.setString("You beat all 10 levels! Press ENTER to exit.");
+                if (victoryLoaded)
+                    window.draw(victoryAnim.sprite);
+                messageText.setString("You beat all 20 levels!");
                 window.draw(messageText);
+                continueBtn.setText("Exit Game");
+                continueBtn.draw(window);
             }
             else
             {
                 footerText.setString("Type the string above as fast as you can!");
                 window.draw(footerText);
+                if (!paused)
+                    pauseBtn.draw(window);
+            }
+        }
+
+        if (paused)
+        {
+            sf::RectangleShape overlay({800.f, 600.f});
+            overlay.setFillColor(sf::Color(10, 10, 15, 190));
+            window.draw(overlay);
+
+            sf::Text pauseTitle(font, "PAUSED", 44);
+            pauseTitle.setPosition({310.f, 140.f});
+            window.draw(pauseTitle);
+
+            pauseContinueBtn.draw(window);
+            pauseSaveBtn.draw(window);
+            pauseMenuBtn.draw(window);
+
+            sf::Text pauseWarning(font, "(Back to Menu abandons progress in this run)", 16);
+            pauseWarning.setPosition({300.f, 430.f});
+            pauseWarning.setFillColor(sf::Color(190, 190, 200));
+            window.draw(pauseWarning);
+
+            if (!pauseFeedback.empty())
+            {
+                sf::Text feedback(font, pauseFeedback, 20);
+                feedback.setFillColor(sf::Color(120, 230, 140));
+                feedback.setPosition({300.f, 460.f});
+                window.draw(feedback);
             }
         }
 
